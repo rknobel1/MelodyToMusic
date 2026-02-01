@@ -3,6 +3,7 @@ import glob
 import tensorflow as tf
 import pretty_midi
 import numpy as np
+import os
 
 
 def get_data():
@@ -54,6 +55,8 @@ def midi_to_notes(midi_file):
 
 # Generate midi file
 def notes_to_midi(inst, out_file, instrument_name):
+    output_dir = pathlib.Path('OutputMaestro')
+
     notes = inst[:, 0]
     starts, durations = inst[:, 1], inst[:, 2]
     velocities = inst[:, 3]
@@ -69,6 +72,8 @@ def notes_to_midi(inst, out_file, instrument_name):
         note = pretty_midi.Note(velocity=int(velocities[i]), pitch=int(notes[i]), start=starts[i], end=starts[i] + durations[i])
         instrument.notes.append(note)
 
-    # print(instrument.notes)
     pm.instruments.append(instrument)
+
+    if not output_dir.exists():
+        os.mkdir(output_dir)
     pm.write(out_file)

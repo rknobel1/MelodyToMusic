@@ -7,10 +7,10 @@ tf.random.set_seed(seed)
 np.random.seed(seed)
 
 # Setting parameters
-epochs = 1000
+epochs = 10_000
 batch_size = 32
 saving_interval = 1000
-[gan, generator, discriminator] = GAN()
+gan = build_gan(device="cuda")
 
 # Train model
-gan_train(gan, generator, discriminator, epoch=epochs, batch_size=batch_size, saving_interval=saving_interval)
+gan_train(gan, epochs=epochs, batch_size=batch_size, saving_interval=saving_interval)

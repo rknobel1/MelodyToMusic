@@ -1,98 +1,70 @@
-from tensorflow.keras.layers import Input, Dense, Reshape, Flatten, Dropout
-from tensorflow.keras.layers import BatchNormalization, Activation, LeakyReLU, UpSampling2D, Conv2D
-from tensorflow.keras.models import Sequential, Model
+import torch
+import torch.nn as nn
 
 
-class Generator(Model):
-    def __init__(self, noise_dim=100):
+class Generator(nn.Module):
+    def __init__(self, z_dim=100):
         super().__init__()
-        self.noise_dim = noise_dim
+        self.net = nn.Sequential(
+            nn.Linear(z_dim, 128*4*4),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.BatchNorm1d(128*4*4),
+            nn.Unflatten(1, (128, 4, 4)),
 
-        self.dense = Dense(128 * 4 * 4)
-        self.bn1 = BatchNormalization()
-        self.reshape = Reshape((4, 4, 128))
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.LeakyReLU(0.2, inplace=True),
 
-        self.up1 = UpSampling2D()
-        self.conv1 = Conv2D(64, kernel_size=(2, 4), padding="same")
-        self.bn2 = BatchNormalization()
+            nn.Upsample(scale_factor=2, mode='nearest'),
+            nn.Conv2d(64, 1, kernel_size=3, padding=1),
+            nn.Tanh()
+        )
 
-        self.up2 = UpSampling2D()
-        self.conv2 = Conv2D(1, kernel_size=(4, 4),
-                                   padding="same",
-                                   activation="tanh")
-
-        self.lrelu = LeakyReLU(0.2)
-
-    def call(self, z, training=False):
-        x = self.dense(z)
-        x = self.lrelu(x)
-        x = self.bn1(x, training=training)
-        x = self.reshape(x)
-
-        x = self.up1(x)
-        x = self.conv1(x)
-        x = self.lrelu(x)
-        x = self.bn2(x, training=training)
-
-        x = self.up2(x)
-        return self.conv2(x)
+    def forward(self, z):
+        return self.net(z)
 
 
-class Discriminator(Model):
+class Discriminator(nn.Module):
     def __init__(self):
         super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(1, 64, 4, stride=4, padding=1),
+            nn.Conv2d(64, 128, (2, 4), stride=4, padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+            nn.Dropout(0.3),
+            nn.Flatten(),
+            nn.Linear(256 * 1 * 1, 1),
+            nn.Sigmoid()
+        )
 
-        self.conv1 = Conv2D(64, kernel_size=(4, 4),
-                                   strides=4,
-                                   padding="same")
-        self.drop1 = Dropout(0.3)
-
-        self.conv2 = Conv2D(128, kernel_size=(2, 4),
-                                   strides=4,
-                                   padding="same")
-        self.drop2 = Dropout(0.3)
-
-        self.flatten = Flatten()
-        self.out = Dense(1, activation="sigmoid")
-
-        self.lrelu = LeakyReLU(0.2)
-
-    def call(self, x, training=False):
-        x = self.conv1(x)
-        x = self.lrelu(x)
-        x = self.drop1(x, training=training)
-
-        x = self.conv2(x)
-        x = self.lrelu(x)
-        x = self.drop2(x, training=training)
-
-        x = self.flatten(x)
-        return self.out(x)
+    def forward(self, x):
+        return self.net(x)
 
 
-def GAN():
-    noise_dim = 100
+def build_gan(
+    noise_dim=100,
+    lr=2e-4,
+    betas=(0.5, 0.999),
+    device="gpu"
+):
+    generator = Generator(noise_dim).to(device)
+    discriminator = Discriminator().to(device)
 
-    generator = Generator(noise_dim)
-    discriminator = Discriminator()
+    criterion = nn.BCELoss()
 
-    discriminator.compile(
-        optimizer="adam",
-        loss="binary_crossentropy"
+    optimizer_g = torch.optim.Adam(
+        generator.parameters(), lr=lr, betas=betas
+    )
+    optimizer_d = torch.optim.Adam(
+        discriminator.parameters(), lr=lr, betas=betas
     )
 
-    discriminator.trainable = False
-
-    gan_input = Input(shape=(noise_dim,))
-    fake_img = generator(gan_input)
-    gan_output = discriminator(fake_img)
-
-    gan = Model(gan_input, gan_output)
-    gan.compile(
-        optimizer="adam",
-        loss="binary_crossentropy"
-    )
-
-    gan.summary()
-
-    return [gan, generator, discriminator]
+    return {
+        "G": generator,
+        "D": discriminator,
+        "opt_G": optimizer_g,
+        "opt_D": optimizer_d,
+        "criterion": criterion,
+        "device": device
+    }
