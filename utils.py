@@ -6,7 +6,7 @@ import numpy as np
 import os
 
 
-def get_data():
+def get_data(num_files=100):
     # Extract data file
     data_dir = pathlib.Path('data/maestro-v2.0.0')
     # data_dir = pathlib.Path('./data')
@@ -26,11 +26,16 @@ def get_data():
     j = 0
     # Preparing training data
     for file in filenames:
-        if j == 10:
+        if j == num_files:
             break
         j += 1
         file_information = midi_to_notes(file)
         train_x.append(file_information)
+
+    # Make data the same size
+    min_len = min(len(sample) for sample in train_x)
+    for i in range(len(train_x)):
+        train_x[i] = train_x[i][0:min_len]
 
     return train_x
 
@@ -43,19 +48,15 @@ def midi_to_notes(midi_file):
     # Storing and returning information
     note_information = []
 
-    i=0
     for _, note in enumerate(instrument.notes):
-        if i == 64:
-            break
         note_information.append([note.pitch, note.start, note.end - note.start, note.velocity])
-        i += 1
 
     return note_information
 
 
 # Generate midi file
 def notes_to_midi(inst, out_file, instrument_name):
-    output_dir = pathlib.Path('OutputMaestro')
+    output_dir = pathlib.Path('/output_maestro')
 
     notes = inst[:, 0]
     starts, durations = inst[:, 1], inst[:, 2]

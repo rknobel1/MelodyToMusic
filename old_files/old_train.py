@@ -2,20 +2,9 @@ from models import *
 from utils import *
 import time
 import datetime
-import shutil
 
 
-output_path = "/output_maestro"
-
-
-def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000, num_files=100):
-    num_features = 4
-    max_len = 100
-
-    # Clear current output_maestro folder if exists
-    if os.path.exists(output_path):
-        shutil.rmtree(output_path)
-
+def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=1_000):
     # Unpack GAN components
     G = gan_objs["G"]
     D = gan_objs["D"]
@@ -29,7 +18,7 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     # -----------------
     # Load & preprocess data
     # -----------------
-    train_x = get_data(num_files=num_files)
+    train_x = get_data()
     train_x = np.array(train_x)
 
     # Sort each sample by start time
@@ -48,21 +37,23 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     train_x[:, :, 2] = (train_x[:, :, 2] - max_duration / 2) / (max_duration / 2)
     train_x[:, :, 3] = (train_x[:, :, 3] - max_velocity / 2) / (max_velocity / 2)
 
-    # Reshape to be compatible with LSTMs
-    model_input, model_output = [], []
+    # Pad / truncate to max_len = 64
+    max_len = 64
+    train_x_padded = []
 
     for sample in train_x:
-        for i in range(0, len(sample) - max_len):
-            model_input.append(sample[i:i + max_len])
-            model_output.append(sample[i + max_len])
+        if len(sample) > max_len:
+            sample = sample[:max_len]
+        else:
+            pad_count = max_len - len(sample)
+            sample = np.pad(sample, ((0, pad_count), (0, 0)), mode='constant', constant_values=-1)
+        train_x_padded.append(sample)
 
-    total_samples = len(model_input)
+    train_x_padded = np.array(train_x_padded)
+    train_x_padded = train_x_padded.reshape(train_x_padded.shape[0], 1, 16, 16)
+    train_x_padded = torch.tensor(train_x_padded, dtype=torch.float32, device=device)
 
-    model_input, model_output = np.array(model_input), np.array(model_output)
-    model_input, model_output = model_input.reshape(total_samples, max_len, num_features), model_output.reshape(total_samples, 1, num_features)
-    model_input, model_output = torch.tensor(model_input, dtype=torch.float32, device=device), torch.tensor(model_output, dtype=torch.float32, device=device)
-
-    print("Train data shape:", model_input.shape)
+    print("Train data shape:", train_x_padded.shape)
 
     # -----------------
     # Labels
@@ -78,8 +69,8 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     for epoch in range(epochs + 1):
 
         # ---- Train Discriminator ----
-        idx = np.random.randint(0, model_input.shape[0], batch_size)
-        real_imgs = model_input[idx]
+        idx = np.random.randint(0, train_x_padded.shape[0], batch_size)
+        real_imgs = train_x_padded[idx]
 
         opt_D.zero_grad()
 
@@ -109,7 +100,7 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
             G.eval()
             with torch.no_grad():
                 noise = torch.randn(1, 100, device=device)
-                gen_image = G(noise).cpu().numpy().reshape(max_len, num_features)
+                gen_image = G(noise).cpu().numpy().reshape(64, 4)
 
                 # Denormalize
                 gen_image[:, 0] = (gen_image[:, 0] * 0.5 + 0.5) * max_note
@@ -117,11 +108,11 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
                 gen_image[:, 2] = (gen_image[:, 2] * 0.5 + 0.5) * max_duration
                 gen_image[:, 3] = (gen_image[:, 3] * 0.5 + 0.5) * max_velocity
 
-                file_name = f'./{output_path}/{epoch}.midi'
+                file_name = f'./OutputMaestro/{epoch}.midi'
                 notes_to_midi(gen_image, file_name, 'Electric Grand Piano')
 
                 # Save generator weights every 10 intervals
-                torch.save(G.state_dict(), f'./{output_path}/{epoch}_generator.pt')
+                torch.save(G.state_dict(), f'./OutputMaestro/{epoch}_generator.pt')
 
             G.train()
             print(f"\t epoch:{epoch} | d_loss:{d_loss.item():.4f} | g_loss:{g_loss.item():.4f}")
