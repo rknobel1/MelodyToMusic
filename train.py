@@ -20,7 +20,7 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     D = gan_objs["D"]
     opt_G = gan_objs["opt_G"]
     opt_D = gan_objs["opt_D"]
-    criterion = gan_objs["criterion"]
+    # criterion = gan_objs["criterion"]
     device = gan_objs["device"]
 
     print("Training device:", device)
@@ -75,22 +75,26 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     print("Training...")
     start_time = time.time()
     for epoch in range(epochs + 1):
-        for _ in range(3):
-            # ---- Train Discriminator ----
+        for _ in range(1):  # was 3 — 1 is better with CNN + SN
             idx = np.random.randint(0, model_input.shape[0], batch_size)
             real_imgs = model_input[idx]
 
             opt_D.zero_grad()
 
-            # Real
-            real_loss = criterion(D(real_imgs), true_label)
-
-            # Fake
+            # Generate fake samples
             noise = torch.randn(batch_size, 100, device=device)
-            fake_imgs = G(noise).detach()  # detach so gradients don't flow to G
-            fake_loss = criterion(D(fake_imgs), fake_label)
+            fake_imgs = G(noise).detach()
 
-            d_loss = 0.5 * (real_loss + fake_loss)
+            # Discriminator outputs (logits)
+            real_logits = D(real_imgs)
+            fake_logits = D(fake_imgs)
+
+            # Hinge loss
+            d_loss = (
+                torch.mean(torch.nn.functional.relu(1.0 - real_logits)) +
+                torch.mean(torch.nn.functional.relu(1.0 + fake_logits))
+            )
+
             d_loss.backward()
             opt_D.step()
 
@@ -99,8 +103,12 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
 
         noise = torch.randn(batch_size, 100, device=device)
         fake_imgs = G(noise)
-        g_loss = criterion(D(fake_imgs), true_label)
+
+        fake_logits = D(fake_imgs)
+        g_loss = -torch.mean(fake_logits)
+
         g_loss.backward()
+        torch.nn.utils.clip_grad_norm_(G.parameters(), 1.0)
         opt_G.step()
 
         # d_loss = 0

@@ -41,6 +41,34 @@ class LSTMGenerator(nn.Module):
         return self.tanh(out)  # (batch, 100, 4)
 
 
+class CNNDiscriminator(nn.Module):
+    def __init__(self, input_size=4):
+        super().__init__()
+
+        self.net = nn.Sequential(
+            # (B, 4, 100)
+            torch.nn.utils.spectral_norm(nn.Conv1d(input_size, 64, kernel_size=3, padding=1)),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            torch.nn.utils.spectral_norm(nn.Conv1d(64, 128, kernel_size=5, padding=2)),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            torch.nn.utils.spectral_norm(nn.Conv1d(128, 256, kernel_size=7, padding=3)),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.AdaptiveAvgPool1d(1),  # (B, 256, 1)
+        )
+
+        self.fc = torch.nn.utils.spectral_norm(nn.Linear(256, 1))
+
+    def forward(self, x):
+        # x: (B, T, 4) → (B, 4, T)
+        x = x.transpose(1, 2)
+        x = self.net(x)
+        x = x.squeeze(-1)
+        return self.fc(x)
+
+
 class RNNDiscriminator(nn.Module):
     def __init__(self, input_size=4, hidden_size=256, num_layers=3):
         super().__init__()
@@ -71,13 +99,13 @@ def build_gan(
     noise_dim=100,
     lr_G=1e-4,
     lr_D=1e-4,
-    betas=(0.5, 0.999),
+    betas=(0.0, 0.999),
     device="cuda"
 ):
     generator = LSTMGenerator(noise_dim).to(device)
-    discriminator = RNNDiscriminator().to(device)
+    discriminator = CNNDiscriminator().to(device)
 
-    criterion = nn.BCEWithLogitsLoss()
+    # criterion = nn.BCEWithLogitsLoss()
 
     optimizer_g = torch.optim.Adam(
         generator.parameters(), lr=lr_G, betas=betas
@@ -91,6 +119,6 @@ def build_gan(
         "D": discriminator,
         "opt_G": optimizer_g,
         "opt_D": optimizer_d,
-        "criterion": criterion,
+        # "criterion": criterion,
         "device": device
     }
