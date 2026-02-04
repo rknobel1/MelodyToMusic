@@ -5,16 +5,15 @@ import datetime
 import shutil
 
 
-output_path = "/output_maestro"
-
-
 def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000, num_files=100):
+    output_path = "output_maestro"
     num_features = 4
     max_len = 100
 
     # Clear current output_maestro folder if exists
     if os.path.exists(output_path):
         shutil.rmtree(output_path)
+    os.mkdir(output_path)
 
     # Unpack GAN components
     G = gan_objs["G"]
@@ -67,7 +66,7 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     # -----------------
     # Labels
     # -----------------
-    true_label = torch.ones(batch_size, 1, device=device)
+    true_label = torch.full((batch_size, 1), 0.9, device=device)
     fake_label = torch.zeros(batch_size, 1, device=device)
 
     # -----------------
@@ -76,24 +75,24 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     print("Training...")
     start_time = time.time()
     for epoch in range(epochs + 1):
+        for _ in range(3):
+            # ---- Train Discriminator ----
+            idx = np.random.randint(0, model_input.shape[0], batch_size)
+            real_imgs = model_input[idx]
 
-        # ---- Train Discriminator ----
-        idx = np.random.randint(0, model_input.shape[0], batch_size)
-        real_imgs = model_input[idx]
+            opt_D.zero_grad()
 
-        opt_D.zero_grad()
+            # Real
+            real_loss = criterion(D(real_imgs), true_label)
 
-        # Real
-        real_loss = criterion(D(real_imgs), true_label)
+            # Fake
+            noise = torch.randn(batch_size, 100, device=device)
+            fake_imgs = G(noise).detach()  # detach so gradients don't flow to G
+            fake_loss = criterion(D(fake_imgs), fake_label)
 
-        # Fake
-        noise = torch.randn(batch_size, 100, device=device)
-        fake_imgs = G(noise).detach()  # detach so gradients don't flow to G
-        fake_loss = criterion(D(fake_imgs), fake_label)
-
-        d_loss = 0.5 * (real_loss + fake_loss)
-        d_loss.backward()
-        opt_D.step()
+            d_loss = 0.5 * (real_loss + fake_loss)
+            d_loss.backward()
+            opt_D.step()
 
         # ---- Train Generator ----
         opt_G.zero_grad()
@@ -103,6 +102,39 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
         g_loss = criterion(D(fake_imgs), true_label)
         g_loss.backward()
         opt_G.step()
+
+        # d_loss = 0
+        # for _ in range(5):
+        #     # ---- Train Critic ----
+        #     idx = np.random.randint(0, model_input.shape[0], batch_size)
+        #     real_seq = model_input[idx].to(device)
+        #
+        #     opt_D.zero_grad()
+        #
+        #     # Fake sequence
+        #     noise = torch.randn(batch_size, 100, device=device)
+        #     fake_seq = G(noise).detach()
+        #
+        #     # Critic outputs
+        #     D_real = D(real_seq)  # (batch,1)
+        #     D_fake = D(fake_seq)  # (batch,1)
+        #
+        #     # Wasserstein loss
+        #     d_loss = -(D_real.mean() - D_fake.mean())
+        #     d_loss.backward()
+        #     opt_D.step()
+        #
+        #     # Clip critic weights (simple WGAN)
+        #     for p in D.parameters():
+        #         p.data.clamp_(-0.01, 0.01)
+        #
+        # # ---- Train Generator ----
+        # opt_G.zero_grad()
+        # noise = torch.randn(batch_size, 100, device=device)
+        # fake_seq = G(noise)
+        # g_loss = -D(fake_seq).mean()  # maximize critic output
+        # g_loss.backward()
+        # opt_G.step()
 
         # ---- Log to console and Save generated MIDI ----
         if epoch % saving_interval == 0:

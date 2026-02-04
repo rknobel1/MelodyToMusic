@@ -56,8 +56,6 @@ def midi_to_notes(midi_file):
 
 # Generate midi file
 def notes_to_midi(inst, out_file, instrument_name):
-    output_dir = pathlib.Path('/output_maestro')
-
     notes = inst[:, 0]
     starts, durations = inst[:, 1], inst[:, 2]
     velocities = inst[:, 3]
@@ -74,7 +72,4 @@ def notes_to_midi(inst, out_file, instrument_name):
         instrument.notes.append(note)
 
     pm.instruments.append(instrument)
-
-    if not output_dir.exists():
-        os.mkdir(output_dir)
     pm.write(out_file)

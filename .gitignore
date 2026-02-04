@@ -4,6 +4,7 @@
 /data
 /output_maestro
 /__pycache__
+/decent_outputs
 
 # dependencies
 /node_modules
