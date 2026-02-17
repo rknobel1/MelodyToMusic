@@ -96,7 +96,8 @@ def midi_to_roll_segments(midi_file, bars=4, steps_per_beat=4, beats_per_bar=4, 
     segments = []
 
     # Slide in fixed time steps with small overlap
-    hop = seg_len // (overlap_pct * 100.)
+    hop = max(1, int(seg_len * (1 - overlap_pct)))
+
     for start in range(0, T_total - seg_len + 1, hop):
         end = start + seg_len
 
