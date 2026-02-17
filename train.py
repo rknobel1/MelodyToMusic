@@ -1,16 +1,35 @@
+import torch.utils.data
+
 from models import *
 from utils import *
 import time
 import datetime
 import shutil
+import os
 
 
-def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000, num_files=100):
+def gan_train(
+    gan_objs,
+    epochs=500,
+    batch_size=64,
+    saving_interval=100,
+    num_files=1282,
+    bars=4,
+    steps_per_beat=4,
+    beats_per_bar=4,
+    C=4,                # onset, hold, velocity, pedal
+    threshold=0.2,
+):
     output_path = "output_maestro"
-    num_features = 4
-    max_len = 100
 
-    # Clear current output_maestro folder if exists
+    # time steps per segment
+    T = bars * beats_per_bar * steps_per_beat
+    F = 128 * C  # flattened pitch x channels
+
+    discriminator_steps_per_epoch = 1
+    generator_steps_per_epoch = 2
+
+    # Clear output folder
     if os.path.exists(output_path):
         shutil.rmtree(output_path)
     os.mkdir(output_path)
@@ -20,7 +39,6 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     D = gan_objs["D"]
     opt_G = gan_objs["opt_G"]
     opt_D = gan_objs["opt_D"]
-    # criterion = gan_objs["criterion"]
     device = gan_objs["device"]
 
     print("Training device:", device)
@@ -28,151 +46,135 @@ def gan_train(gan_objs, epochs=1_000_000, batch_size=32, saving_interval=100_000
     # -----------------
     # Load & preprocess data
     # -----------------
-    train_x = get_data(num_files=num_files)
-    train_x = np.array(train_x)
+    # [N, T, 128, C] in [0,1]
+    train_roll = get_data(
+        num_files=num_files,
+        bars=bars,
+        steps_per_beat=steps_per_beat,
+        beats_per_bar=beats_per_bar,
+        vel_bins=16,
+    )
 
-    # Sort each sample by start time
-    for i in range(len(train_x)):
-        train_x[i] = sorted(train_x[i], key=lambda s: s[1])
-    print("Data shape:", train_x.shape)
+    train_roll = np.array(train_roll, dtype=np.float32)
+    print("Roll data shape:", train_roll.shape)  # expect [N, T, 128, C]
 
-    # Normalize between -1 and 1
-    max_note = np.amax(train_x[:, :, 0])
-    max_start = np.amax(train_x[:, :, 1])
-    max_duration = np.amax(train_x[:, :, 2])
-    max_velocity = np.amax(train_x[:, :, 3])
+    # Map [0,1] -> [-1,1]
+    train_roll = train_roll * 2.0 - 1.0
 
-    train_x[:, :, 0] = (train_x[:, :, 0] - max_note / 2) / (max_note / 2)
-    train_x[:, :, 1] = (train_x[:, :, 1] - max_start / 2) / (max_start / 2)
-    train_x[:, :, 2] = (train_x[:, :, 2] - max_duration / 2) / (max_duration / 2)
-    train_x[:, :, 3] = (train_x[:, :, 3] - max_velocity / 2) / (max_velocity / 2)
+    # Torch tensor
+    model_input = torch.tensor(train_roll, dtype=torch.float32, device=device)
+    print("Train tensor shape:", model_input.shape)  # [N, T, F]
 
-    # Reshape to be compatible with LSTMs
-    model_input, model_output = [], []
-
-    for sample in train_x:
-        for i in range(0, len(sample) - max_len):
-            model_input.append(sample[i:i + max_len])
-            model_output.append(sample[i + max_len])
-
-    total_samples = len(model_input)
-
-    model_input, model_output = np.array(model_input), np.array(model_output)
-    model_input, model_output = model_input.reshape(total_samples, max_len, num_features), model_output.reshape(total_samples, 1, num_features)
-    model_input, model_output = torch.tensor(model_input, dtype=torch.float32, device=device), torch.tensor(model_output, dtype=torch.float32, device=device)
-
-    print("Train data shape:", model_input.shape)
-
-    # -----------------
-    # Labels
-    # -----------------
-    true_label = torch.full((batch_size, 1), 0.9, device=device)
-    fake_label = torch.zeros(batch_size, 1, device=device)
+    # DataLoader
+    dataset = torch.utils.data.TensorDataset(model_input)
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        drop_last=True
+    )
 
     # -----------------
     # Training loop
     # -----------------
     print("Training...")
     start_time = time.time()
+
     for epoch in range(epochs + 1):
-        for _ in range(1):  # was 3 — 1 is better with CNN + SN
-            idx = np.random.randint(0, model_input.shape[0], batch_size)
-            real_imgs = model_input[idx]
+        epoch_d_loss = 0.0
+        epoch_g_loss = 0.0
+        num_batches = 0
 
-            opt_D.zero_grad()
+        for (real_batch,) in dataloader:
+            real_seq = real_batch  # [B, T, F]
 
-            # Generate fake samples
-            noise = torch.randn(batch_size, 100, device=device)
-            fake_imgs = G(noise).detach()
+            dl, gl = 0.0, 0.0
 
-            # Discriminator outputs (logits)
-            real_logits = D(real_imgs)
-            fake_logits = D(fake_imgs)
+            # ---- Train Discriminator ----
+            for _ in range(discriminator_steps_per_epoch):
+                opt_D.zero_grad(set_to_none=True)
 
-            # Hinge loss
-            d_loss = (
-                torch.mean(torch.nn.functional.relu(1.0 - real_logits)) +
-                torch.mean(torch.nn.functional.relu(1.0 + fake_logits))
-            )
+                noise = torch.randn(batch_size, 100, device=device)
+                fake_seq = G(noise).detach()  # [B, T, F]
+                fake_seq = fake_seq.view(batch_size, T, 128, C)
 
-            d_loss.backward()
-            opt_D.step()
+                real_logits = D(real_seq)
+                fake_logits = D(fake_seq)
 
-        # ---- Train Generator ----
-        opt_G.zero_grad()
+                # Hinge loss
+                d_loss = (
+                    torch.mean(torch.nn.functional.relu(1.0 - real_logits)) +
+                    torch.mean(torch.nn.functional.relu(1.0 + fake_logits))
+                )
+                dl += d_loss.item()
 
-        noise = torch.randn(batch_size, 100, device=device)
-        fake_imgs = G(noise)
+                d_loss.backward()
+                opt_D.step()
 
-        fake_logits = D(fake_imgs)
-        g_loss = -torch.mean(fake_logits)
+            # ---- Train Generator ----
+            for _ in range(generator_steps_per_epoch):
+                opt_G.zero_grad(set_to_none=True)
 
-        g_loss.backward()
-        torch.nn.utils.clip_grad_norm_(G.parameters(), 1.0)
-        opt_G.step()
+                noise = torch.randn(batch_size, 100, device=device)
+                fake_seq = G(noise)
+                fake_seq = fake_seq.view(batch_size, T, 128, C)
 
-        # d_loss = 0
-        # for _ in range(5):
-        #     # ---- Train Critic ----
-        #     idx = np.random.randint(0, model_input.shape[0], batch_size)
-        #     real_seq = model_input[idx].to(device)
-        #
-        #     opt_D.zero_grad()
-        #
-        #     # Fake sequence
-        #     noise = torch.randn(batch_size, 100, device=device)
-        #     fake_seq = G(noise).detach()
-        #
-        #     # Critic outputs
-        #     D_real = D(real_seq)  # (batch,1)
-        #     D_fake = D(fake_seq)  # (batch,1)
-        #
-        #     # Wasserstein loss
-        #     d_loss = -(D_real.mean() - D_fake.mean())
-        #     d_loss.backward()
-        #     opt_D.step()
-        #
-        #     # Clip critic weights (simple WGAN)
-        #     for p in D.parameters():
-        #         p.data.clamp_(-0.01, 0.01)
-        #
-        # # ---- Train Generator ----
-        # opt_G.zero_grad()
-        # noise = torch.randn(batch_size, 100, device=device)
-        # fake_seq = G(noise)
-        # g_loss = -D(fake_seq).mean()  # maximize critic output
-        # g_loss.backward()
-        # opt_G.step()
+                fake_logits = D(fake_seq)
+                g_loss = -torch.mean(fake_logits)
+                gl += g_loss.item()
 
-        # ---- Log to console and Save generated MIDI ----
+                g_loss.backward()
+                opt_G.step()
+
+            num_batches += 1
+            epoch_d_loss += dl / discriminator_steps_per_epoch
+            epoch_g_loss += gl / generator_steps_per_epoch
+
+        # -----------------
+        # Save sample
+        # -----------------
         if epoch % saving_interval == 0:
             G.eval()
             with torch.no_grad():
                 noise = torch.randn(1, 100, device=device)
-                gen_image = G(noise).cpu().numpy().reshape(max_len, num_features)
+                gen_seq = G(noise).cpu().numpy().reshape(T, F)  # [-1,1]
 
-                # Denormalize
-                gen_image[:, 0] = (gen_image[:, 0] * 0.5 + 0.5) * max_note
-                gen_image[:, 1] = (gen_image[:, 1] * 0.5 + 0.5) * max_start
-                gen_image[:, 2] = (gen_image[:, 2] * 0.5 + 0.5) * max_duration
-                gen_image[:, 3] = (gen_image[:, 3] * 0.5 + 0.5) * max_velocity
+            # Back to [0,1]
+            gen_seq01 = (gen_seq + 1.0) / 2.0
+            gen_roll = gen_seq01.reshape(T, 128, C)  # [T, 128, C]
 
-                file_name = f'./{output_path}/{epoch}.midi'
-                notes_to_midi(gen_image, file_name, 'Electric Grand Piano')
+            # DEBUG -----------------------------------------------------------------------
+            on = gen_roll[:, :, 0]
+            hd = gen_roll[:, :, 1]
+            vl = gen_roll[:, :, 2]
+            print(f"\t\t onset mean={on.mean():.4f} std={on.std():.4f}")
+            print(f"\t\t hold  mean={hd.mean():.4f} std={hd.std():.4f}")
+            print(f"\t\t vel   mean={vl.mean():.4f} std={vl.std():.4f} max={vl.max():.4f}")
 
-                # Save generator weights every 10 intervals
-                torch.save(G.state_dict(), f'./{output_path}/{epoch}_generator.pt')
+            # onset = gen_roll[:,:,0] , hold = gen_roll[:,:,1] , vel = gen_roll[:,:,2], pedal = gen_roll[:,:,3]
+            gen_roll[:, :, 0] = (gen_roll[:, :, 0] > threshold).astype(np.float32)
+            gen_roll[:, :, 1] = (gen_roll[:, :, 1] > threshold).astype(np.float32)
+            if C >= 4:
+                gen_roll[:, :, 3] = (gen_roll[:, :, 3] > threshold).astype(np.float32)
+
+            file_name = f'./{output_path}/{epoch}.midi'
+
+            print("\t\t decoded onsets:", gen_roll[:, :, 0].sum(),
+                  "decoded holds:", gen_roll[:, :, 1].sum())
+
+            # Convert piano roll into midi
+            roll_to_midi(gen_roll, file_name, steps_per_beat=steps_per_beat, tempo=120.0)
+
+            torch.save(G.state_dict(), f'./{output_path}/{epoch}_generator.pt')
 
             G.train()
-            print(f"\t epoch:{epoch} | d_loss:{d_loss.item():.4f} | g_loss:{g_loss.item():.4f}")
+
+            print(f"\t\t [epoch:{epoch}] | d_loss:{epoch_d_loss / num_batches:.4f} | g_loss:{epoch_g_loss / num_batches:.4f}")
+
     total_time = time.time() - start_time
     time_delta = datetime.timedelta(seconds=total_time)
-
-    # Calculate total hours and format the string manually
-    # time_delta.days * 24 accounts for the days component
     total_hours = time_delta.days * 24 + time_delta.seconds // 3600
     minutes = (time_delta.seconds % 3600) // 60
     seconds = time_delta.seconds % 60
-
     formatted_time_hms = f"{total_hours:02}:{minutes:02}:{seconds:02}"
     print(f"Elapsed time: {formatted_time_hms}")

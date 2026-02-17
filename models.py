@@ -3,19 +3,12 @@ import torch.nn as nn
 
 
 class LSTMGenerator(nn.Module):
-    def __init__(
-        self,
-        z_dim=100,
-        hidden_size=256,
-        num_layers=3,
-        seq_len=100,
-        feature_dim=4
-    ):
+    def __init__(self, z_dim=100, hidden_size=256, num_layers=3, seq_len=64, feature_dim=512):
         super().__init__()
-
         self.seq_len = seq_len
+        self.hidden_size = hidden_size
+        self.num_layers = num_layers
 
-        # Project noise into initial hidden space
         self.fc = nn.Linear(z_dim, hidden_size)
 
         self.lstm = nn.LSTM(
@@ -29,96 +22,89 @@ class LSTMGenerator(nn.Module):
         self.tanh = nn.Tanh()
 
     def forward(self, z):
-        # z: (batch, z_dim)
+        b = z.size(0)
 
-        # Create repeated input sequence
-        h0 = torch.tanh(self.fc(z))           # (batch, hidden)
-        lstm_input = h0.unsqueeze(1).repeat(1, self.seq_len, 1)
+        # per-step noise + global style
+        x = torch.randn(b, self.seq_len, self.hidden_size, device=z.device)
+        style = self.fc(z).view(b, 1, self.hidden_size)
+        x = x + style
 
-        out, _ = self.lstm(lstm_input)
+        out, _ = self.lstm(x)
         out = self.output(out)
+        return self.tanh(out)  # [b, T, 128*C]
 
-        return self.tanh(out)  # (batch, 100, 4)
 
-
-class CNNDiscriminator(nn.Module):
-    def __init__(self, input_size=4):
+# Patch GAN
+class Conv2DDiscriminator(nn.Module):
+    def __init__(self, in_channels=4, use_mbstd=True):
         super().__init__()
+        self.use_mbstd = use_mbstd
 
-        self.net = nn.Sequential(
-            # (B, 4, 100)
-            torch.nn.utils.spectral_norm(nn.Conv1d(input_size, 64, kernel_size=3, padding=1)),
+        def snconv(in_c, out_c, k=4, s=2, p=1):
+            return nn.utils.spectral_norm(
+                nn.Conv2d(in_c, out_c, kernel_size=k, stride=s, padding=p)
+            )
+
+        c_in = in_channels + (1 if use_mbstd else 0)
+
+        self.backbone = nn.Sequential(
+            snconv(c_in, 64, 4, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
 
-            torch.nn.utils.spectral_norm(nn.Conv1d(64, 128, kernel_size=5, padding=2)),
+            snconv(64, 128, 4, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
 
-            torch.nn.utils.spectral_norm(nn.Conv1d(128, 256, kernel_size=7, padding=3)),
+            snconv(128, 256, 4, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
 
-            nn.AdaptiveAvgPool1d(1),  # (B, 256, 1)
+            snconv(256, 512, 4, 2, 1),
+            nn.LeakyReLU(0.2, inplace=True),
         )
 
-        self.fc = torch.nn.utils.spectral_norm(nn.Linear(256, 1))
+        # Patch head: outputs a map of logits [B,1,H,W]
+        self.head = nn.utils.spectral_norm(nn.Conv2d(512, 1, kernel_size=1))
+
+    @staticmethod
+    def minibatch_stddev(x):
+        # x: [B,C,H,W]
+        std = torch.std(x, dim=0, unbiased=False).mean()
+        std_feat = std.expand(x.size(0), 1, x.size(2), x.size(3))
+        return torch.cat([x, std_feat], dim=1)
 
     def forward(self, x):
-        # x: (B, T, 4) → (B, 4, T)
-        x = x.transpose(1, 2)
-        x = self.net(x)
-        x = x.squeeze(-1)
-        return self.fc(x)
+        # x: [B,T,128,C] -> [B,C,128,T]
+        x = x.permute(0, 3, 2, 1).contiguous()
 
+        if self.use_mbstd:
+            x = self.minibatch_stddev(x)
 
-class RNNDiscriminator(nn.Module):
-    def __init__(self, input_size=4, hidden_size=256, num_layers=3):
-        super().__init__()
-
-        self.rnn = nn.LSTM(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            batch_first=True,
-            bidirectional=True
-        )
-
-        self.fc = nn.Linear(hidden_size * 2, 1)
-        # self.sigmoid = nn.Sigmoid()
-
-    def forward(self, x):
-        # x: (batch, seq_len, 4)
-        out, (h_n, _) = self.rnn(x)
-
-        # Take last hidden state from both directions
-        h_last = torch.cat((h_n[-2], h_n[-1]), dim=1)
-
-        # return self.sigmoid(self.fc(h_last))
-        return self.fc(h_last)
+        h = self.backbone(x)
+        logits_map = self.head(h)                 # [B,1,H,W]
+        return logits_map.mean(dim=(2, 3))        # [B,1]
 
 
 def build_gan(
     noise_dim=100,
     lr_G=1e-4,
     lr_D=1e-4,
-    betas=(0.0, 0.999),
-    device="cuda"
+    betas=(0.0, 0.9),
+    device="cuda",
+    T=64,
+    C=4,
+    hidden_size=256,
+    num_layers=3,
 ):
-    generator = LSTMGenerator(noise_dim).to(device)
-    discriminator = CNNDiscriminator().to(device)
+    feature_dim = 128 * C
+    generator = LSTMGenerator(
+        z_dim=noise_dim,
+        hidden_size=hidden_size,
+        num_layers=num_layers,
+        seq_len=T,
+        feature_dim=feature_dim
+    ).to(device)
+    discriminator = Conv2DDiscriminator(in_channels=C).to(device)
 
-    # criterion = nn.BCEWithLogitsLoss()
+    optimizer_g = torch.optim.Adam(generator.parameters(), lr=lr_G, betas=betas)
+    optimizer_d = torch.optim.Adam(discriminator.parameters(), lr=lr_D, betas=betas)
 
-    optimizer_g = torch.optim.Adam(
-        generator.parameters(), lr=lr_G, betas=betas
-    )
-    optimizer_d = torch.optim.Adam(
-        discriminator.parameters(), lr=lr_D, betas=betas
-    )
-
-    return {
-        "G": generator,
-        "D": discriminator,
-        "opt_G": optimizer_g,
-        "opt_D": optimizer_d,
-        # "criterion": criterion,
-        "device": device
-    }
+    return {"G": generator, "D": discriminator, "opt_G": optimizer_g, "opt_D": optimizer_d, "device": device}
