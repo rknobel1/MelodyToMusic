@@ -14,7 +14,7 @@ saving_interval = epochs / 10
 num_files = 10      # To check if code will run or to run on reduced data
 
 # Build GAN architecture
-gan = build_gan(lr_G=2e-4, lr_D=1e-4, device="cuda")
+gan = build_gan(lr_G=1e-4, lr_D=1e-4, hidden_size=256, num_layers=4, device="cuda")
 
 # Train model
 gan_train(gan, epochs=epochs, batch_size=batch_size, saving_interval=saving_interval,

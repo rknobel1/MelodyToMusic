@@ -147,9 +147,9 @@ def gan_train(
             on = gen_roll[:, :, 0]
             hd = gen_roll[:, :, 1]
             vl = gen_roll[:, :, 2]
-            print(f"\t\t onset mean={on.mean():.4f} std={on.std():.4f}")
-            print(f"\t\t hold  mean={hd.mean():.4f} std={hd.std():.4f}")
-            print(f"\t\t vel   mean={vl.mean():.4f} std={vl.std():.4f} max={vl.max():.4f}")
+            print(f"\t onset mean={on.mean():.4f} std={on.std():.4f}")
+            print(f"\t hold  mean={hd.mean():.4f} std={hd.std():.4f}")
+            print(f"\t vel   mean={vl.mean():.4f} std={vl.std():.4f} max={vl.max():.4f}")
 
             # onset = gen_roll[:,:,0] , hold = gen_roll[:,:,1] , vel = gen_roll[:,:,2], pedal = gen_roll[:,:,3]
             gen_roll[:, :, 0] = (gen_roll[:, :, 0] > threshold).astype(np.float32)
@@ -159,7 +159,7 @@ def gan_train(
 
             file_name = f'./{output_path}/{epoch}.midi'
 
-            print("\t\t decoded onsets:", gen_roll[:, :, 0].sum(),
+            print("\t decoded onsets:", gen_roll[:, :, 0].sum(),
                   "decoded holds:", gen_roll[:, :, 1].sum())
 
             # Convert piano roll into midi
